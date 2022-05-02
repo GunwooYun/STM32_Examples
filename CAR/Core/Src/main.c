@@ -44,19 +44,6 @@
 #define RIGHT_STOP_PWM 1500
 #define GAUGE_START_PWM 2500
 #define GAUGE_MAX_PWM 500
-//#define
-
-#define RESTRICT_PITCH
-#define RAD_TO_DEG 57.295779513082320876798154814105
-#define DEG_TO_RAD 0.01745329251994329576923690768489
-
-#define MAG0MAX 603
-#define MAG0MIN -578
-#define MAG1MAX 542
-#define MAG1MIN -701
-#define MAG2MAX 547
-#define MAG2MIN -556
-
 
 /* USER CODE END PD */
 
@@ -69,6 +56,8 @@
  I2C_HandleTypeDef hi2c1;
 
 TIM_HandleTypeDef htim1;
+TIM_HandleTypeDef htim2;
+TIM_HandleTypeDef htim3;
 
 UART_HandleTypeDef huart2;
 
@@ -82,6 +71,8 @@ static void MX_GPIO_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_TIM1_Init(void);
 static void MX_I2C1_Init(void);
+static void MX_TIM2_Init(void);
+static void MX_TIM3_Init(void);
 /* USER CODE BEGIN PFP */
 #ifdef __GNUC__
 /* With GCC, small printf (option LD Linker->Libraries->Small printf
@@ -124,23 +115,20 @@ int16_t Gyro_Y_RAW = 0;
 int16_t Gyro_Z_RAW = 0;
 
 float Ax, Ay, Az, Gx, Gy, Gz;
-//
-struct Kalman kalmanX, kalmanY, kalmanZ;
-double roll, pitch, yaw;
 
-double gyroXangle, gyroYangle, gyroZangle;
-double kalAngleX, kalAngleY, kalAngleZ;
-double compAngleX, compAngleY, compAngleZ;
+/*Ultrasonic variable*/
+uint32_t IC1, IC2;
+float freq;
+uint8_t captureFlag = 0;
 
-int magX, magY, magZ;
-float magOffset[3] = { (MAG0MAX + MAG0MIN) / 2, (MAG1MAX + MAG1MIN) / 2, (MAG2MAX + MAG2MIN) / 2 };
-double magGain[3];
 
 uint8_t start_flag = 0;
-
-void MPU6050_Init(void)  // 초기?��
+uint8_t move_flag = 0;
+uint8_t coll_flag = 0;
+uint8_t rotate_flag = 0;
+void MPU6050_Init(void)  //
 {
-	//printf("mpu6050 test\n\r");
+
 	uint8_t check, Data;
 
 	HAL_I2C_Mem_Read(&hi2c1, MPU6050_ADDR, WHO_AM_I_REG, 1, &check, 1, 1000);
@@ -164,7 +152,6 @@ void MPU6050_Init(void)  // 초기?��
 
 void MPU6050_Read_Accel (void)
 {
-	//printf(" test1\n\r");
 	uint8_t Rec_Data[6];
 
 	HAL_I2C_Mem_Read(&hi2c1, MPU6050_ADDR, ACCEL_XOUT_H_REG, 1, Rec_Data, 6, 1000);
@@ -179,7 +166,7 @@ void MPU6050_Read_Accel (void)
 
 
 }
-//
+
 void MPU6050_Read_Gyro (void)
 {
 	//printf(" test2\n\r");
@@ -195,152 +182,29 @@ void MPU6050_Read_Gyro (void)
 	Gy = Gyro_Y_RAW/131.0;
 	Gz = Gyro_Z_RAW/131.0;
 }
-//
-void updatePitchRoll() {
-// Source: http://www.freescale.com/files/sensors/doc/app_note/AN3461.pdf eq. 25 and eq. 26
-	// atan2 outputs the value of -π to π (radians) - see http://en.wikipedia.org/wiki/Atan2
-	// It is then converted from radians to degrees
-#ifdef RESTRICT_PITCH // Eq. 25 and 26
-	roll = atan2(Accel_Y_RAW, Accel_Z_RAW) * RAD_TO_DEG;
-	//printf("roll : %f\n\r", roll);
-	pitch = atan(-Accel_X_RAW / sqrt(Accel_Y_RAW * Accel_Y_RAW + Accel_Z_RAW * Accel_Z_RAW)) * RAD_TO_DEG;
-	//printf("pitch : %f\n\r", pitch);
-#else // Eq. 28 and 29
-	roll = atan(Accel_Y_RAW / sqrt(Accel_X_RAW * Accel_X_RAW + Accel_Z_RAW * Accel_Z_RAW)) * RAD_TO_DEG;
-	pitch = atan2(-Accel_X_RAW, Accel_Z_RAW) * RAD_TO_DEG;
-	#endif
+
+
+
+
+
+
+
+void delay_us(uint16_t delay){
+	TIM3->CNT = 0;
+	while(TIM3->CNT < delay);
 }
 
-void updateYaw() { // See: http://www.freescale.com/files/sensors/doc/app_note/AN4248.pdf
-	double rollAngle,pitchAngle,Bfy,Bfx;
-
-     magX *= -1; // Invert axis - this it done here, as it should be done after the calibration
-     magZ *= -1;
-
-     magX *= magGain[0];
-     magY *= magGain[1];
-     magZ *= magGain[2];
-
-     magX -= magOffset[0];
-     magY -= magOffset[1];
-     magZ -= magOffset[2];
-
-
-     rollAngle  = kalAngleX * DEG_TO_RAD;
-     pitchAngle = kalAngleY * DEG_TO_RAD;
-
-     Bfy = magZ * sin(rollAngle) - magY * cos(rollAngle);
-     Bfx = magX * cos(pitchAngle) + magY * sin(pitchAngle) * sin(rollAngle) + magZ * sin(pitchAngle) * cos(rollAngle);
-     yaw = atan2(-Bfy, Bfx) * RAD_TO_DEG;
-
-    yaw *= -1;
+void ultraSonic(){
+	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_1, GPIO_PIN_SET);
+	delay_us(10);
+	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_1, GPIO_PIN_RESET);
 }
 
-void InitAll()
-{
-    /* Set Kalman and gyro starting angle */
-	MPU6050_Read_Accel();
-	MPU6050_Read_Gyro();
-    updatePitchRoll();
-    updateYaw();
-
-    //printf("roll %lf\tpitch : %lf\n\r", roll, pitch);
-    setAngle(&kalmanX,roll); // First set roll starting angle
-    gyroXangle = roll;
-    compAngleX = roll;
-
-    setAngle(&kalmanY,pitch); // Then pitch
-    gyroYangle = pitch;
-    compAngleY = pitch;
-
-    setAngle(&kalmanZ,yaw); // And finally yaw
-    gyroZangle = yaw;
-    compAngleZ = yaw;
-
-//    timer = micros; // Initialize the timer
-}
-
-void func()
-{
-	double gyroXrate, gyroYrate, gyroZrate, dt = 0.01;
-
-	updatePitchRoll();
-	gyroXrate = (double)Gyro_X_RAW / 131.0;     // Convert to deg/s
-	//printf("gyroXrate : %lf\n\r", gyroXrate);
-	gyroYrate = (double)Gyro_Y_RAW / 131.0;     // Convert to deg/s
-	//printf("gyroYrate : %lf\n\r", gyroYrate);
-
-#ifdef RESTRICT_PITCH
-	if ((roll < -90 && kalAngleX > 90) || (roll > 90 && kalAngleX < -90)) {
-		//printf("test 1\n\r");
-		setAngle(&kalmanX, roll);
-		compAngleX = roll;
-		kalAngleX = roll;
-		gyroXangle = roll;
-	} else{
-		//printf("test 2\n\r");
-		//printf("roll : %lf\tgyroXrate : %lf\tdt : %lf\n\r", roll, gyroXrate, dt);
-		kalAngleX = getAngle(&kalmanX, roll, gyroXrate, dt); // Calculate the angle using a Kalman filter
-		//printf("kalAngleX : %lf\n\r", kalAngleX);
-	}
-
-	if (fabs(kalAngleX) > 0){
-		gyroYrate = -gyroYrate; // Invert rate, so it fits the restricted accelerometer reading
-		kalAngleY = getAngle(&kalmanY, pitch, gyroYrate, dt);
-		//printf("kalAngleY : %lf\n\r",kalAngleY);
-
-	}
-	printf("kalAngleX : %lf, kalAngleY : %lf\n\r", kalAngleX, kalAngleY);
-#else
-		// This fixes the transition problem when the accelerometer angle jumps between -180 and 180 degrees
-		if ((pitch < -90 && kalAngleY > 90) || (pitch > 90 && kalAngleY < -90)) {
-			kalmanY.setAngle(pitch);
-			compAngleY = pitch;
-			kalAngleY = pitch;
-			gyroYangle = pitch;
-		} else
-			kalAngleY = getAngle(&kalmanY, pitch, gyroYrate, dt); // Calculate the angle using a Kalman filter
-
-			if (abs(kalAngleY) > 90)
-				gyroXrate = -gyroXrate; // Invert rate, so it fits the restricted accelerometer reading
-				kalAngleX = getAngle(&kalmanX, roll, gyroXrate, dt); // Calculate the angle using a Kalman filter
-	#endif
-
-	updateYaw();
-	gyroZrate = Gyro_Z_RAW / 131.0; // Convert to deg/s
-	// This fixes the transition problem when the yaw angle jumps between -180 and 180 degrees
-	if ((yaw < -90 && kalAngleZ > 90) || (yaw > 90 && kalAngleZ < -90)) {
-		setAngle(&kalmanZ, yaw);
-		compAngleZ = yaw;
-		kalAngleZ = yaw;
-		gyroZangle = yaw;
-	} else
-		kalAngleZ = getAngle(&kalmanZ, yaw, gyroZrate, dt); // Calculate the angle using a Kalman filter
-
-	/* Estimate angles using gyro only */
-	//gyroXangle += gyroXrate * dt; // Calculate gyro angle without any filter
-	//gyroYangle += gyroYrate * dt;
-	//gyroZangle += gyroZrate * dt;
-
-	/* Estimate angles using complimentary filter */
-	//compAngleX = 0.93 * (compAngleX + gyroXrate * dt) + 0.07 * roll; // Calculate the angle using a Complimentary filter
-	//compAngleY = 0.93 * (compAngleY + gyroYrate * dt) + 0.07 * pitch;
-	//compAngleZ = 0.93 * (compAngleZ + gyroZrate * dt) + 0.07 * yaw;
-
-	//printf("compAngleX : %lf, compAngleY : %lf\n\r", compAngleX, compAngleY);
-
-	// Reset the gyro angles when they has drifted too much
-	if (gyroXangle < -180 || gyroXangle > 180)
-		gyroXangle = kalAngleX;
-	if (gyroYangle < -180 || gyroYangle > 180)
-		gyroYangle = kalAngleY;
-	if (gyroZangle < -180 || gyroZangle > 180)
-		gyroZangle = kalAngleZ;
-}
 
 
 int convertValue(){
 	int angle = (int)(Ay*100) / GYRO_SCALE;///GYRO_SCALE;
+	printf("angle : %d\n\r", angle);
 	if(angle >= -5 && angle <= 5) return 0;
 	else if(angle >5 && angle <= 10) return 1;
 	else if(angle > 10 && angle <= 15) return 2;
@@ -361,45 +225,36 @@ int convertValue(){
 	else if(angle >= -40 && angle < -35) return -7;
 	else if(angle >= -45 && angle < -40) return -8;
 	else if(angle >= -50 && angle < -45) return -9;
+
 	else return 0;
 
 }
 
+void stop(){
+	TIM1->CCR1 = 1500; // left wheel
+	TIM1->CCR2 = 1500; // right wheel
+	HAL_Delay(1000);
+}
 
-void gyroTopwm(){
+void backward(){
+	TIM1->CCR1 = 1450; // left wheel
+	TIM1->CCR2 = 1550; // right wheel
+}
 
-
-
-
-//	static int pre_value;
-//	int ay_value;
-//	if(cur_value > -10 && cur_value < 10)
-//	{
-//		ay_value = cur_value / 3;
-//		int delta_val = abs(pre_value - cur_value);
-//
-//		if(delta_val < 2){
-//			ay_value = cur_value;
-//			pre_value = cur_value;
-//		}
-//		else{
-//			ay_value = pre_value;
-//		}
-		//printf("cur_val : %d\tpre_val : %d\tdelta : %d\n\r", cur_value, pre_value, delta_val);
-//	}
-//
-//	else return;
+void rotate(){
+	TIM1->CCR1 = 1550; // left wheel
+	TIM1->CCR2 = 1550; // right wheel
+}
 
 
-	//int ay_value = (int)(Ay*100) / GYRO_SCALE;///GYRO_SCALE;
+void forward(){
+
 	int ay_value = convertValue();
-	//int cur_ay_value;
-	//printf("ay_value : %d\n\r", ay_value);
+
+
 	int left_pwm = LEFT_START_PWM + ay_value*20;
 	int right_pwm = RIGHT_START_PWM - ay_value*20;
 	int gauge_pwm = GAUGE_START_PWM - (left_pwm - LEFT_STOP_PWM)*10;// GAUGE_START_PWM + ay_value*20*5; // wheel : gage = 1 : 5
-	//printf("ay_value : %d\n\r", ay_value);
-	//printf("left_pwm %d\tright_pwm : %d\tgauge_pwm : %d\n\r", left_pwm, right_pwm, gauge_pwm);
 
 	// uphill
 	if(ay_value >= 0 && ay_value < 10){
@@ -408,19 +263,12 @@ void gyroTopwm(){
 			TIM1->CCR1 = left_pwm;
 			TIM1->CCR2 = right_pwm;
 			TIM1->CCR3 = gauge_pwm;
-			printf("left_pwm %d\tright_pwm : %d\tgauge_pwm : %d\n\r", left_pwm, right_pwm, gauge_pwm);
-			//printf("ay_value : %d, left_pwm : %ld, gage_pwm : %ld\n\r",ay_value, TIM1->CCR1, TIM1->CCR3);
 		}
 		else{
 			TIM1->CCR1 = LEFT_MAX_PWM;
 			TIM1->CCR2 = RIGHT_MAX_PWM;
 			TIM1->CCR3 = GAUGE_MAX_PWM;
-			//printf("left_pwm : %ld, gage_pwm : %ld\n\r",TIM1->CCR1, TIM1->CCR3);
-			//printf("left_pwm : %d, gage_pwm : %d\n\r",left_pwm, gauge_pwm);
 		}
-		//printf("left_pwm : %d, gage_pwm : %d\n\r",left_pwm, gauge_pwm);
-
-		//printf("ay_val : %d, left_pwm : %d, right_pwm : %d gage_pwm : %d\n\r", ay_value, left_pwm, right_pwm, gauge_pwm);
 	}
 	// downhill
 	else if(ay_value < 0 && ay_value > -10){
@@ -428,15 +276,45 @@ void gyroTopwm(){
 			TIM1->CCR1 = left_pwm;
 			TIM1->CCR2 = right_pwm;
 			TIM1->CCR3 = gauge_pwm;
-			//printf("ay_value : %d, left_pwm : %ld, gage_pwm : %ld\n\r",ay_value, TIM1->CCR1, TIM1->CCR3);
 
 		}
-		//printf("ay_val : %d, left_pwm : %d, right_pwm : %d\n\r", ay_value, left_pwm, right_pwm);
 
 	}
+}
 
-	//printf("ay_val : %d, left_pwm : %d, right_pwm : %d\n\r", ay_value, left_pwm, right_pwm);
-	//return left_pwm;
+void moving() {
+	int dis = (int) freq;
+	if(dis == 0) return;
+
+	if (coll_flag == 0) {
+		if(move_flag == 1){
+			forward();
+		}
+		if (move_flag == 1 && freq < 7) {
+			stop();
+			move_flag = 2;
+			coll_flag = 1;
+		}
+	}
+	else if (coll_flag == 1) {
+		if(move_flag == 2){
+			backward();
+			//move_flag = 2;
+			if(freq > 20){
+				move_flag = 3;
+			}
+
+		}
+		else if(move_flag == 3){
+			rotate();
+			//HAL_Delay(2000);
+			if(dis > 100){
+				coll_flag = 0;
+				move_flag = 1;
+			}
+		}
+	}
+
 }
 
 
@@ -473,14 +351,13 @@ int main(void)
   MX_USART2_UART_Init();
   MX_TIM1_Init();
   MX_I2C1_Init();
+  MX_TIM2_Init();
+  MX_TIM3_Init();
   /* USER CODE BEGIN 2 */
-  //HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1|TIM_CHANNEL_2|TIM_CHANNEL_3);
+
   HAL_Delay(200);
   lcd_init();
   MPU6050_Init();
-  //Init(&kalmanX);
-  //Init(&kalmanY);
-  //InitAll();
 
   lcd_send_string("initialized");
 
@@ -488,15 +365,20 @@ int main(void)
 
   lcd_clear();
 
-  lcd_send_cmd(0x80|0x5A);
-  lcd_send_string("MPU6050");
-  //HAL_Delay(500);
-
   char buf[4];
 
+  /*Timer1 Start*/
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_3);
+  HAL_Delay(100);
+
+  /*Timer2 Start*/
+  HAL_TIM_IC_Start_IT(&htim2, TIM_CHANNEL_1);
+  HAL_Delay(100);
+
+  /*Timer3 start*/
+  HAL_TIM_Base_Start(&htim3);
 
   /* USER CODE END 2 */
 
@@ -504,61 +386,11 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+	  MPU6050_Read_Accel();
+	  ultraSonic();
+	  moving();
     /* USER CODE END WHILE */
-	MPU6050_Read_Accel();
-	MPU6050_Read_Gyro();
-	//func();
-	//printf("ay : %d\n\r", (int)(Ay*100.0));
 
-	//printf("angle Y : %d\n\r", convertValue());
-
-
-	  lcd_send_cmd (0x80|0x00);  // goto 1,1
-	  	  lcd_send_string ("smart car");
-//	  	  //sprintf (buf, "%.2f", Ax);
-//	  	  //lcd_send_string (buf);
-//	  	  //lcd_send_string ("g ");
-//
-	  	  lcd_send_cmd (0x80|0x40);  // goto 2,1
-	  	  lcd_send_string ("Angle=");
-//	  	  //sprintf (buf, "%.2f", Ay);
-
-	  	  sprintf (buf, " %d", (int)(Ay*100));
-	  	  lcd_send_string (buf);
-	  	lcd_send_string (" ");
-	  	  //printf("buf : %s\n\r", buf);
-	  	  //lcd_send_string ("º ");
-
-//	  	  lcd_send_cmd (0x80|0x14);  // goto 3,1
-//	  	  lcd_send_string ("Az=");
-//	  	  sprintf (buf, "%.2f", Az);
-//	  	  lcd_send_string (buf);
-//	  	  lcd_send_string ("g ");
-
-//	  	  lcd_send_cmd (0x80|0x0A);  // goto 1,11
-//	  	  lcd_send_string ("Gx=");
-//	  	  sprintf (buf, "%.2f", Gx);
-//
-//	  	  lcd_send_string (buf);
-//
-//	  	  lcd_send_cmd (0x80|0x4A);  // goto 2,11
-//	  	  lcd_send_string ("Gy=");
-//	  	  sprintf (buf, "%.2f", Gy);
-//	  	//printf("Gy : %f\n\r", Gy);
-//	  	  lcd_send_string (buf);
-
-//	  	  lcd_send_cmd (0x80|0x1E);  // goto 3,11
-//	  	  lcd_send_string ("Gz=");
-//	  	  sprintf (buf, "%.2f", Gz);
-//	  	  lcd_send_string (buf);
-
-	//printf("kal_angle_X : %lf, kal_angle_Y : %lf\n\r", kalAngleX, kalAngleY);
-
-	if(start_flag){
-		gyroTopwm();
-	}
-
-	HAL_Delay(250);
     /* USER CODE BEGIN 3 */
   }
   /* USER CODE END 3 */
@@ -721,6 +553,109 @@ static void MX_TIM1_Init(void)
 }
 
 /**
+  * @brief TIM2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM2_Init(void)
+{
+
+  /* USER CODE BEGIN TIM2_Init 0 */
+
+  /* USER CODE END TIM2_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_IC_InitTypeDef sConfigIC = {0};
+
+  /* USER CODE BEGIN TIM2_Init 1 */
+
+  /* USER CODE END TIM2_Init 1 */
+  htim2.Instance = TIM2;
+  htim2.Init.Prescaler = 64-1;
+  htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim2.Init.Period = 65535;
+  htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim2, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_IC_Init(&htim2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigIC.ICPolarity = TIM_INPUTCHANNELPOLARITY_RISING;
+  sConfigIC.ICSelection = TIM_ICSELECTION_DIRECTTI;
+  sConfigIC.ICPrescaler = TIM_ICPSC_DIV1;
+  sConfigIC.ICFilter = 0;
+  if (HAL_TIM_IC_ConfigChannel(&htim2, &sConfigIC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM2_Init 2 */
+
+  /* USER CODE END TIM2_Init 2 */
+
+}
+
+/**
+  * @brief TIM3 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM3_Init(void)
+{
+
+  /* USER CODE BEGIN TIM3_Init 0 */
+
+  /* USER CODE END TIM3_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM3_Init 1 */
+
+  /* USER CODE END TIM3_Init 1 */
+  htim3.Instance = TIM3;
+  htim3.Init.Prescaler = 64-1;
+  htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim3.Init.Period = 65535;
+  htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim3, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim3, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM3_Init 2 */
+
+  /* USER CODE END TIM3_Init 2 */
+
+}
+
+/**
   * @brief USART2 Initialization Function
   * @param None
   * @retval None
@@ -769,7 +704,7 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOA, Trig_Pin_Pin|Buzzer_Pin|LD2_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin : B1_Pin */
   GPIO_InitStruct.Pin = B1_Pin;
@@ -777,12 +712,12 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(B1_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : LD2_Pin */
-  GPIO_InitStruct.Pin = LD2_Pin;
+  /*Configure GPIO pins : Trig_Pin_Pin Buzzer_Pin LD2_Pin */
+  GPIO_InitStruct.Pin = Trig_Pin_Pin|Buzzer_Pin|LD2_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(LD2_GPIO_Port, &GPIO_InitStruct);
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
   /* EXTI interrupt init*/
   HAL_NVIC_SetPriority(EXTI15_10_IRQn, 0, 0);
@@ -792,50 +727,55 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 
-void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin){
-	if(GPIO_Pin == GPIO_PIN_13){
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
+	if (GPIO_Pin == GPIO_PIN_13) {
 		TIM1->CCR1 = 1600; // left wheel
 		TIM1->CCR2 = 1400; // right wheel
 		start_flag = 1;
+		move_flag = 1;
 	}
 
-
-
-//	switch(GPIO_Pin){
-//		case GPIO_PIN_0 : // accel
-//			HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_0);
-//			if(TIM1->CCR1 == 1310 && TIM1->CCR2 == 1690 && TIM1->CCR3 == 1000) break;
-//			else{
-//				TIM1->CCR1 -= 10;
-//				TIM1->CCR2 += 10;
-//				TIM1->CCR3 -= 25;
-//			}
-//			printf("sw2 -> CCR1 : %ld, CCR2 : %ld\n\r", TIM1->CCR1, TIM1->CCR2);
-//			break;
-//		case GPIO_PIN_1 : // decel
-//			HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_1);
-//			if(TIM1->CCR1 == 1500 && TIM1->CCR2 == 1500 && TIM1->CCR3 == 2000) break;
-//			else{
-//				TIM1->CCR1 += 10;
-//				TIM1->CCR2 -= 10;
-//				TIM1->CCR3 += 25;
-//			}
-//			printf("sw3 -> CCR1 : %ld, CCR2 : %ld\n\r", TIM1->CCR1, TIM1->CCR2);
-//			break;
-//		case GPIO_PIN_10 : // decel car duty : 25%
-//			HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_5);
-////						if(TIM1->CCR1 == 1310 && TIM1->CCR2 == 1690) break;
-////						else{
-////							TIM1->CCR1 -= 10;
-////							TIM1->CCR2 += 10;
-////						}
-//						//TIM1->CCR1 = (uint32_t)1400;
-//						//TIM1->CCR2 = (uint32_t)1600;
-//			break;
-//		default :
-//			break;
-//	}
 }
+
+void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim)
+{
+	//printf("test\n\r");
+	//HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_0);
+	if(htim->Channel == HAL_TIM_ACTIVE_CHANNEL_1)
+	{
+		if(captureFlag == 0)
+		{
+			//printf("test1\n\r");
+//			IC1 = HAL_TIM_ReadCapturedValue(&htim2, TIM_CHANNEL_1);
+			IC1 = TIM2->CCR1;
+			captureFlag = 1;
+			__HAL_TIM_SET_CAPTUREPOLARITY(&htim2, TIM_CHANNEL_1, TIM_INPUTCHANNELPOLARITY_FALLING);
+		}
+		else if(captureFlag == 1)
+		{
+//			IC2 = HAL_TIM_ReadCapturedValue(&htim2, TIM_CHANNEL_1);
+			IC2 = TIM2->CCR1;
+			freq = (IC2 - IC1) * 340 / 10000 / 2;
+//			freq = 1/((IC2 - IC1) * (float)psr/clk);
+			__HAL_TIM_SET_COUNTER(&htim2, 0);
+			if(freq > 0 && freq < 1000)
+			{
+				//printf("%f\n\r", freq);
+				if(freq < 30 && start_flag == 1)
+				{
+					 HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_SET);
+					 delay_us(freq * 100000);
+					 HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_RESET);
+					 delay_us(freq * 100000);
+				}
+			}
+			captureFlag = 0;
+			__HAL_TIM_SET_CAPTUREPOLARITY(&htim2, TIM_CHANNEL_1, TIM_INPUTCHANNELPOLARITY_RISING);
+		}
+	}
+
+}
+
 
 /* USER CODE END 4 */
 
